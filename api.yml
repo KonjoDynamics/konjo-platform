@@ -1,0 +1,32 @@
+name: api
+on:
+  push: { branches: [main], paths: ['api/**'] }
+  workflow_dispatch:
+permissions: { id-token: write, contents: read }
+env: { RG: rg-konjo-dev, APP: ca-konjo-dev-api }
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Tests (no Azure needed)
+        working-directory: api
+        run: node --test
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build image in Azure and roll out
+        run: |
+          ACR=$(az acr list -g $RG --query "[0].name" -o tsv)
+          TAG=${GITHUB_SHA::8}
+          az acr build -r $ACR -t konjo-api:$TAG api
+          az containerapp ingress update -g $RG -n $APP --target-port 8080
+          az containerapp update -g $RG -n $APP --image $ACR.azurecr.io/konjo-api:$TAG
+      - name: Smoke test
+        run: |
+          H=$(az containerapp show -g $RG -n $APP --query properties.configuration.ingress.fqdn -o tsv)
+          for i in 1 2 3 4 5 6; do curl -fsS https://$H/healthz && exit 0; sleep 10; done; exit 1
